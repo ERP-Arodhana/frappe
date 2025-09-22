@@ -73,6 +73,7 @@ def document_list(doctype: str):
 
 	# set limit of records for frappe.get_list
 	frappe.form_dict.limit_page_length = frappe.form_dict.limit or 20
+	frappe.form_dict.limit_start = frappe.form_dict.start or 0
 	# evaluate frappe.get_list
 	return frappe.call(frappe.client.get_list, doctype, **frappe.form_dict)
 
@@ -88,7 +89,12 @@ def count(doctype: str) -> int:
 def create_doc(doctype: str):
 	data = frappe.form_dict
 	data.pop("doctype", None)
-	return frappe.new_doc(doctype, **data).insert()
+	doc = frappe.new_doc(doctype, **data)
+
+	if (name := data.get("name")) and isinstance(name, str | int):
+		doc.flags.name_set = True
+
+	return doc.insert()
 
 
 def copy_doc(doctype: str, name: str, ignore_no_copy: bool = True):
@@ -109,6 +115,7 @@ def update_doc(doctype: str, name: str):
 	data.pop("flags", None)
 	doc.update(data)
 	doc.save()
+	doc.apply_fieldlevel_read_permissions()
 
 	# check for child table doctype
 	if doc.get("parenttype"):

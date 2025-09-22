@@ -153,6 +153,9 @@ def get_context(context):
 		else:
 			context.template = "website/doctype/web_form/templates/web_form.html"
 
+		# By default, assume no delete permissions
+		context.has_delete_permission = False
+
 		# check permissions
 		if frappe.form_dict.name:
 			assert isinstance(frappe.form_dict.name, str | int)
@@ -172,6 +175,10 @@ def get_context(context):
 				frappe.throw(
 					_("You don't have the permissions to access this document"), frappe.PermissionError
 				)
+
+			context.has_delete_permission = frappe.has_permission(
+				self.doc_type, "delete", frappe.form_dict.name
+			)
 
 		if frappe.local.path == self.route:
 			path = f"/{self.route}/list" if self.show_list else f"/{self.route}/new"
@@ -276,8 +283,8 @@ def get_context(context):
 			"Cancel",
 			"Discard:Button in web form",
 			"Edit:Button in web form",
-			"See previous responses:Button in web form",
-			"Edit your response:Button in web form",
+			"See previous responses::Button in web form",
+			"Edit your response::Button in web form",
 			"Are you sure you want to discard the changes?",
 			"Mandatory fields required::Error message in web form",
 			"Invalid values for fields::Error message in web form",
@@ -285,6 +292,27 @@ def get_context(context):
 			"Page {0} of {1}",
 			"Couldn't save, please check the data you have entered",
 			"Validation Error",
+			"No {0} found",
+			"Create a new {0}",
+			"Drag and drop files here or upload from",
+			"My Device",
+			"Link",
+			"Camera",
+			"Upload",
+			"Set all public",
+			"Set all private",
+			"Public",
+			"Private",
+			"Optimize",
+			"Drop files here",
+			"Take Photo",
+			"No Images",
+			"Total Images",
+			"Preview",
+			"Submit",
+			"Capture",
+			"Attach a web link",
+			"← Back to upload files",
 			self.title,
 			self.introduction_text,
 			self.success_title,
@@ -329,7 +357,7 @@ def get_context(context):
 			messages.append("Upload")
 			messages.append("Last")
 			messages.append("First")
-			messages.append("No.:Title of the 'row number' column")
+			messages.append("No.")
 
 		# Phone Picker
 		if any(field.fieldtype == "Phone" for field in self.web_form_fields):
@@ -372,7 +400,7 @@ def get_context(context):
 			context.parents = frappe.safe_eval(self.breadcrumbs, {"_": _})
 
 		if self.show_list and frappe.form_dict.is_new:
-			context.title = _("New {0}").format(context.title)
+			context.title = _("New {0}").format(_(context.title))
 
 		context.has_header = (frappe.form_dict.name or frappe.form_dict.is_new) and (
 			frappe.session.user != "Guest" or not self.login_required
@@ -405,7 +433,9 @@ def get_context(context):
 			context.reference_doc = frappe.get_doc(self.doc_type, context.doc_name)
 			context.web_form_title = context.title
 			context.title = (
-				strip_html(context.reference_doc.get(context.reference_doc.meta.get_title_field()))
+				strip_html(
+					frappe.cstr(context.reference_doc.get(context.reference_doc.meta.get_title_field()))
+				)
 				or context.doc_name
 			)
 			context.reference_doc.add_seen()
@@ -413,15 +443,7 @@ def get_context(context):
 			context.reference_name = context.reference_doc.name
 
 			if self.show_attachments:
-				context.attachments = frappe.get_all(
-					"File",
-					filters={
-						"attached_to_name": context.reference_name,
-						"attached_to_doctype": context.reference_doctype,
-						"is_private": 0,
-					},
-					fields=["file_name", "file_url", "file_size"],
-				)
+				context.attachments = self.get_webform_attachments(context)
 
 			if self.allow_comments:
 				context.comment_list = get_comment_list(
@@ -501,6 +523,51 @@ def get_context(context):
 
 		else:
 			return False
+
+	def get_webform_attachments(self, context):
+		"""
+		Returns permitted attachments for the webform.
+		NOTE: At this point, `self.login_required` is True.
+		"""
+		from frappe.core.doctype.file.file import has_permission as has_file_permission
+
+		def _add_attachment(attachment):
+			"""Add attachment to the list."""
+			return {
+				"file_name": attachment.file_name,
+				"file_url": attachment.file_url,
+				"file_size": attachment.file_size,
+			}
+
+		attachments = frappe.get_all(
+			"File",
+			filters={
+				"attached_to_name": context.reference_name,
+				"attached_to_doctype": context.reference_doctype,
+			},
+			fields=[
+				"is_private",
+				"file_name",
+				"file_url",
+				"file_size",
+				"owner",
+				"attached_to_doctype",
+				"attached_to_name",
+			],
+		)
+
+		permitted_attachments = []
+		for attachment in attachments:
+			if not attachment.is_private:
+				# Public attachments are always permitted
+				permitted_attachments.append(_add_attachment(attachment))
+				continue
+
+			# Attachment is private. Check for file permission
+			if has_file_permission(attachment, "read"):
+				permitted_attachments.append(_add_attachment(attachment))
+
+		return permitted_attachments
 
 
 def get_web_form_module(doc):
@@ -657,13 +724,13 @@ def check_webform_perm(doctype, name):
 
 
 @frappe.whitelist(allow_guest=True)
-def get_web_form_filters(web_form_name):
+def get_web_form_filters(web_form_name: str):
 	web_form = frappe.get_doc("Web Form", web_form_name)
 	return [field for field in web_form.web_form_fields if field.show_in_filter]
 
 
 @frappe.whitelist(allow_guest=True)
-def get_form_data(doctype, docname=None, web_form_name=None):
+def get_form_data(doctype: str, docname: str | None = None, web_form_name: str | None = None):
 	web_form = frappe.get_doc("Web Form", web_form_name)
 
 	if web_form.login_required and frappe.session.user == "Guest":
